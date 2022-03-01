@@ -3,11 +3,20 @@ uuid = "627b3c6e-8a7a-4b16-b4c0-edd578221f89"
 authors = ["Léo Petit <leo.petit@live.fr> and contributors"]
 version = "0.1.0"
 
-[extras]
-Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+[deps]
+DataFormatter = "a3c1147e-d2b5-4eae-a63e-c40db2968188"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+FiniteDiff = "6a86dc24-6348-571c-b903-95158fe2bd41"
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+NamedArrays = "86f7a689-2022-50b4-a561-43c23ac3c673"
 
 [compat]
 julia = "1.6"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
 test = ["Test"]
