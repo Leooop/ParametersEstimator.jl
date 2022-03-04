@@ -13,8 +13,8 @@ function get_jacobian(g::F, mₙ ; method=:finitediff) where F<:Function
     return J
 end
 
-function get_new_parameters!(g::F, mₙₑₓₜ, mₙ, mₚ, dₙ, dₒ, Cm, Cd ; μₙ=1.0) where F<:Function
-    G = get_jacobian(g, mₙ ; method=:finitediff) 
+function get_new_parameters!(g::F, mₙₑₓₜ, mₙ, mₚ, dₙ, dₒ, Cm, Cd ; μₙ=1.0, diff_method=:finitediff) where F<:Function
+    G = get_jacobian(g, mₙ ; method=diff_method) 
     Cm_inv, Cd_inv = inv(Cm), inv(Cd)
     A = G'*Cd_inv*G + Cm_inv
     b = G'*Cd_inv*(dₙ - dₒ) + Cm_inv*(mₙ - mₚ)
@@ -22,8 +22,8 @@ function get_new_parameters!(g::F, mₙₑₓₜ, mₙ, mₚ, dₙ, dₒ, Cm, Cd
     return mₙₑₓₜ
 end
 
-function get_new_parameters!(g::F, mₙₑₓₜ::NamedArray, mₙ::NamedArray, mₚ::NamedArray, dₙ, dₒ, Cm, Cd ; μₙ=1.0) where F<:Function
-    G = get_jacobian(g, mₙ ; method=:finitediff) 
+function get_new_parameters!(g::F, mₙₑₓₜ::NamedArray, mₙ::NamedArray, mₚ::NamedArray, dₙ, dₒ, Cm, Cd ; μₙ=1.0, diff_method=:finitediff) where F<:Function
+    G = get_jacobian(g, mₙ ; method=diff_method)
     Cm_inv, Cd_inv = inv(Cm), inv(Cd)
     A = G'*Cd_inv*G + Cm_inv
     b = G'*Cd_inv*(dₙ - dₒ) + Cm_inv*(mₙ - mₚ).array
@@ -31,14 +31,18 @@ function get_new_parameters!(g::F, mₙₑₓₜ::NamedArray, mₙ::NamedArray, 
     return mₙₑₓₜ
 end
 
-function optimize!(dataset, p, ; μₙ=1.0, reltol=1e-8, maxiters=1000, plot_type=nothing)
+function optimize!(dataset, p, ; 
+        μₙ=1.0, reltol=1e-8, 
+        maxiters=1000, 
+        diff_method = :finitediff,
+        allow_mismatch=false)
     reldiff = Inf
     mₙₑₓₜ, Cm = get_logspace_model_and_covmat(p)
     mₙ = copy(mₙₑₓₜ)
     mₚ = copy(mₙₑₓₜ)
     n = 0
 
-    simulate!(dataset, p)
+    simulate!(dataset, p ; allow_mismatch)
     df_target = get_target_data(dataset)
     transform_data!(df_target,p)
     dₙ = df_target.target_sim
@@ -47,7 +51,7 @@ function optimize!(dataset, p, ; μₙ=1.0, reltol=1e-8, maxiters=1000, plot_typ
 
     function g(m)
         p.mp .= exp10.(m)
-        simulate!(dataset,p)
+        simulate!(dataset, p ; allow_mismatch)
         df_target = get_target_data(dataset)
         transform_data!(df_target, p)
         return Vector{Float64}(df_target[!,:target_sim])
@@ -64,7 +68,7 @@ function optimize!(dataset, p, ; μₙ=1.0, reltol=1e-8, maxiters=1000, plot_typ
         #@show (mₙₑₓₜ.-mₚ)./mₚ
         mₙ .= mₙₑₓₜ
         #try
-            get_new_parameters!(g, mₙₑₓₜ, mₙ, mₚ, dₙ, dₒ, Cm, Cd ; μₙ)
+            get_new_parameters!(g, mₙₑₓₜ, mₙ, mₚ, dₙ, dₒ, Cm, Cd ; μₙ, diff_method)
             p.mp .= exp10.(mₙₑₓₜ)
             simulate!(dataset, p)
             df_target_next = get_target_data(dataset)
@@ -123,11 +127,11 @@ end
 get_logspace_model_and_covmat(p) = get_logspace_model_and_covmat(p.mp, p.mp_std ; max_log_std = p.estimate.log_mp_std_max)
 
 function get_logspace_model_and_covmat(mp, std_mp ; max_log_std=4) #TODO : change kwarg to max_log_var
-    log_lb = log10.(mp .- min.(std_mp, mp.-1e-10))
-    log_ub = log10.(mp .+ std_mp)
+    log_lb = log10.(mp.array .- min.(std_mp, mp.array .- 1e-12))
+    log_ub = log10.(mp.array .+ std_mp)
     Δlog_var = min.((log_ub.-log_lb).^2, max_log_std)
     Cm_log = Diagonal(Δlog_var)
-    return log10.(mp), Cm_log
+    return log10.(mp.array), Cm_log
 end
 # Automatic update plot
 
