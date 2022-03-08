@@ -1,5 +1,6 @@
 
-
+include("add_data_points.jl")
+include("vizualize_optim.jl")
 export optimize!, get_jacobian, get_posterior_model_covariance, get_logspace_model_and_covmat
 
 function get_jacobian(g::F, mₙ ; method=:finitediff) where F<:Function
@@ -23,7 +24,7 @@ function get_new_parameters!(g::F, mₙₑₓₜ, mₙ, mₚ, dₙ, dₒ, Cm, Cd
 end
 
 function get_new_parameters!(g::F, mₙₑₓₜ::NamedArray, mₙ::NamedArray, mₚ::NamedArray, dₙ, dₒ, Cm, Cd ; μₙ=1.0, diff_method=:finitediff) where F<:Function
-    G = get_jacobian(g, mₙ ; method=diff_method)
+    G = get_jacobian(g, mₙ.array ; method=diff_method)
     Cm_inv, Cd_inv = inv(Cm), inv(Cd)
     A = G'*Cd_inv*G + Cm_inv
     b = G'*Cd_inv*(dₙ - dₒ) + Cm_inv*(mₙ - mₚ).array
@@ -44,23 +45,25 @@ function optimize!(dataset, p, ;
 
     simulate!(dataset, p ; allow_mismatch)
     df_target = get_target_data(dataset)
+    add_data_points!(df_target, dataset, p)
+
     transform_data!(df_target,p)
-    dₙ = df_target.target_sim
-    dₒ = df_target.target
-    Cd = get_data_covmat(df_target)
+    dₒ, dₙ = df_target.target, df_target.target_sim
+    
+    Cd = get_transformed_covmat(df_target, p)
 
     function g(m)
         p.mp .= exp10.(m)
         simulate!(dataset, p ; allow_mismatch)
         df_target = get_target_data(dataset)
+        add_data_points!(df_target, dataset, p)
         transform_data!(df_target, p)
         return Vector{Float64}(df_target[!,:target_sim])
     end
 
     #initialize plot
-    ts_obs = get_observable_timeseries(dataset)
-    ts_obs = (ts_obs isa Vector) ? ts_obs[1] : ts_obs
-    vizualize(ts_obs)
+    ds_obs = get_observable_dataset(dataset)
+    vizualize(ds_obs)
  
 
     while (reldiff > reltol) & (n < maxiters)
@@ -70,11 +73,11 @@ function optimize!(dataset, p, ;
         #try
             get_new_parameters!(g, mₙₑₓₜ, mₙ, mₚ, dₙ, dₒ, Cm, Cd ; μₙ, diff_method)
             p.mp .= exp10.(mₙₑₓₜ)
-            simulate!(dataset, p)
+            simulate!(dataset, p ; allow_mismatch)
             df_target_next = get_target_data(dataset)
+            add_data_points!(df_target_next, dataset, p)
             transform_data!(df_target_next,p)
-            dₙ = df_target_next.target_sim
-            dₒ = df_target_next.target
+            dₒ, dₙ = df_target.target, df_target.target_sim
             #Cd = get_data_covmat(df_target) # not needed if data always has the same length
             #reldiff = maximum(abs.((mₙₑₓₜ .- mₙ)./mₙ))
             reldiff = sum((dₙ.-dₒ).^2)
@@ -87,7 +90,8 @@ function optimize!(dataset, p, ;
         @show reldiff
 
         #plot
-        update_and_notify_obs!(ts_obs,dataset)
+        #update_and_notify_obs!(ds_obs,dataset)
+        notify(ds_obs)
 
     end
 
@@ -109,6 +113,8 @@ function get_posterior_model_covariance(g::F, m, Cm, Cd) where F<:Function
     return Cm - Cm*G' * inv(G*Cm*G' + Cd) * G*Cm
 end
 
+
+
 function transform_data!(df_target::AbstractDataFrame, p)
     dfg = groupby(df_target,:target_name)
     if hasproperty(p.estimate,:transform_target)
@@ -124,51 +130,41 @@ function transform_data!(df_target::AbstractDataFrame, p)
     return df_target
 end
 
-get_logspace_model_and_covmat(p) = get_logspace_model_and_covmat(p.mp, p.mp_std ; max_log_std = p.estimate.log_mp_std_max)
-
 function get_logspace_model_and_covmat(mp, std_mp ; max_log_std=4) #TODO : change kwarg to max_log_var
-    log_lb = log10.(mp.array .- min.(std_mp, mp.array .- 1e-12))
+    log_lb = log10.(max.(mp.array .- std_mp, 1e-15))
     log_ub = log10.(mp.array .+ std_mp)
     Δlog_var = min.((log_ub.-log_lb).^2, max_log_std)
     Cm_log = Diagonal(Δlog_var)
     return log10.(mp.array), Cm_log
 end
-# Automatic update plot
+get_logspace_model_and_covmat(p) = get_logspace_model_and_covmat(p.mp, p.mp_std ; max_log_std = p.estimate.log_mp_std_max)
 
-function get_observable_timeseries(ds::TimeseriesDataset)
-    var_to_observe = [ds.var, ds.target..., Symbol.(string.(ds.target...).*"_sim")]
-    ts = TimeseriesDataset(ds.data[:,[:t, var_to_observe...]], ds.target, ds.var)
-    return Observable(ts)
-end
-get_observable_timeseries(ds::Dataset) = get_observable_timeseries.(ds.timeseries)
-
-
-function update_and_notify_obs!(ts_obs::Observable{TimeseriesDataset},ts::TimeseriesDataset)
-    ts_obs[].data[:, [string.(ts.target...), string.(ts.target...)*"_sim"]] .= ts.data[:, [string.(ts.target...), string.(ts.target...)*"_sim"]]
-    notify(ts_obs) 
-end
-update_and_notify_obs!(ts_obs::Observable{TimeseriesDataset},ds::Dataset) = update_and_notify_obs!(ts_obs,ds.timeseries[1])
-
-function vizualize(ds::Observable{TimeseriesDataset} )
-    #ds = ds_obs[]
-    dg = @lift group($ds)
-    f = Figure(resolution=(1500,1200))
-    ax = Axis(f[1, 1], fontsize=40)
-    for i in 1:length(dg[])
-            t_vec = @lift $dg[i].t
-            target_sim_vec = @lift -$dg[i][:, string.($ds.target...)*"_sim"]
-            target_vec = @lift -$dg[i][:, $ds.target...]
-
-            lines!(ax, t_vec, target_sim_vec,
-            color = :black, linewidth = 5
-            )
-        
-            scatter!(ax, t_vec, target_vec,
-                #marker = markers[j],
-                markersize = 20,
-                color = Cycled(i)
-            )
+function get_transformed_covmat(dₒ_vec, std_vec, target_names, p) #TODO : change kwarg to max_log_var
+    len = length(std_vec)
+    Cd = Diagonal{Float64}(undef,len)
+    funcs = [getproperty(p.estimate.transform_target, target_name) for target_name in target_names]
+    is_positive_real_func = fill(false,length(funcs))
+    println("entering try-catch block")
+    for i in eachindex(funcs)
+        try
+            funcs[i](-1)
+        catch e
+            is_positive_real_func[i] = ifelse(e isa DomainError, true, false)
+        end
     end
-    display(f)
-    f, ax
+    println("exiting")
+
+    for i in 1:len
+        target_name = target_names[i]
+        func_id = findfirst(target_name .== target_names)
+        func = funcs[func_id]
+        dₒ = dₒ_vec[i]
+        std = std_vec[i]
+        lb = ifelse(is_positive_real_func[i], func(max(dₒ - std, 1e-15)), func(dₒ - std))
+        ub = func(dₒ + std)
+        var = ifelse(is_positive_real_func[i], min((ub-lb)^2, p.estimate.log_mp_std_max), (ub-lb)^2)
+        Cd[i,i] = var
+    end
+    return Cd
 end
+get_transformed_covmat(df_target, p) = get_transformed_covmat(df_target.target, df_target.std, df_target.target_name, p)
