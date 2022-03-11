@@ -36,21 +36,23 @@ function optimize!(dataset, p, ;
         μₙ=1.0, reltol=1e-8, 
         maxiters=1000, 
         diff_method = :finitediff,
-        allow_mismatch=false)
+        allow_mismatch=false,
+        plot_transformed=false)
     reldiff = Inf
     mₙₑₓₜ, Cm = get_logspace_model_and_covmat(p)
     mₙ = copy(mₙₑₓₜ)
     mₚ = copy(mₙₑₓₜ)
     n = 0
-
+    
     simulate!(dataset, p ; allow_mismatch)
     df_target = get_target_data(dataset)
     add_data_points!(df_target, dataset, p)
+    Cd = get_transformed_covmat(df_target, p) # needs to happen before data gets transformed.
 
     transform_data!(df_target,p)
     dₒ, dₙ = df_target.target, df_target.target_sim
     
-    Cd = get_transformed_covmat(df_target, p)
+    Cdinv, Cminv = inv(Cd), inv(Cm)
 
     function g(m)
         p.mp .= exp10.(m)
@@ -62,54 +64,53 @@ function optimize!(dataset, p, ;
     end
 
     #initialize plot
-    ds_obs = get_observable_dataset(dataset)
+    ds_obs = Observable(dataset)#get_observable_dataset(dataset)
+    #update_and_notify_obs!(ds_obs, dataset, p ; plot_transformed)
     vizualize(ds_obs)
- 
-
+    
+    #iterate
     while (reldiff > reltol) & (n < maxiters)
-        n+=1 ; @show(n)
+        n+=1 ; println() ; @show(n)
         #@show (mₙₑₓₜ.-mₚ)./mₚ
         mₙ .= mₙₑₓₜ
-        #try
-            get_new_parameters!(g, mₙₑₓₜ, mₙ, mₚ, dₙ, dₒ, Cm, Cd ; μₙ, diff_method)
-            p.mp .= exp10.(mₙₑₓₜ)
-            simulate!(dataset, p ; allow_mismatch)
-            df_target_next = get_target_data(dataset)
-            add_data_points!(df_target_next, dataset, p)
-            transform_data!(df_target_next,p)
-            dₒ, dₙ = df_target.target, df_target.target_sim
-            #Cd = get_data_covmat(df_target) # not needed if data always has the same length
-            #reldiff = maximum(abs.((mₙₑₓₜ .- mₙ)./mₙ))
-            reldiff = sum((dₙ.-dₒ).^2)
-        # catch e
-        #     @show mₙ mₙₑₓₜ
-        #     @show maximum(abs,get_jacobian(g, mₙ ; method=:finitediff) )
-        #     @show extrema(g(mₙ))
-        #     throw(e)
-        # end
-        @show reldiff
+        get_new_parameters!(g, mₙₑₓₜ, mₙ, mₚ, dₙ, dₒ, Cm, Cd ; μₙ, diff_method)
+        p.mp .= exp10.(mₙₑₓₜ)
+        simulate!(dataset, p ; allow_mismatch)
+        df_target_next = get_target_data(dataset)
+        add_data_points!(df_target_next, dataset, p)
+        transform_data!(df_target_next,p)
+        dₒ, dₙ = df_target_next.target, df_target_next.target_sim
+        #Cd = get_transformed_covmat(df_target, p) # not needed if data always has the same length
+        
+        cost_data  = (dₙ-dₒ)'*Cdinv*(dₙ-dₒ)
+        cost_model = (mₙₑₓₜ-mₚ)'*Cminv*(mₙₑₓₜ-mₚ)
+        cost = cost_data + cost_model
+        @show unique(Cdinv)
+        @show mean((dₙ-dₒ).^2)
+        @show cost_data
+        @show cost_model
+        @show cost
 
         #plot
-        #update_and_notify_obs!(ds_obs,dataset)
+        #update_and_notify_obs!(ds_obs, dataset, p ; plot_transformed)
         notify(ds_obs)
-
     end
 
-    return dataset, p
+    return dataset, p, Cm, Cd
 end
 
 
-function get_posterior_model_covariance(g::F, m, Cm, Cd) where F<:Function
-    G = get_jacobian(g, m ; method=:finitediff)
-    println("G done")
-    Cm*G'
-    println("Cm*G' done")
-    G*Cm*G' + Cd
-    println("G*Cm*G' + Cd done")
-    inv(G*Cm*G' + Cd)
-    println("inv(G*Cm*G' + Cd) done")
-    G*Cm
-    println("G*Cm done")
+function get_posterior_model_covariance(g::F, m::NamedArray, Cm, Cd) where F<:Function
+    G = get_jacobian(g, m.array ; method=:finitediff)
+    # println("G done")
+    # Cm*G'
+    # println("Cm*G' done")
+    # G*Cm*G' + Cd
+    # println("G*Cm*G' + Cd done")
+    # inv(G*Cm*G' + Cd)
+    # println("inv(G*Cm*G' + Cd) done")
+    # G*Cm
+    # println("G*Cm done")
     return Cm - Cm*G' * inv(G*Cm*G' + Cd) * G*Cm
 end
 
@@ -129,6 +130,32 @@ function transform_data!(df_target::AbstractDataFrame, p)
     end
     return df_target
 end
+
+function transform_data!(ds::Dataset, p)
+    for i in eachindex(ds.timeseries)
+        transform_data!(ds.timeseries[i], p)
+    end
+    for i in eachindex(ds.ponctual)
+        transform_data!(ds.ponctual[i], p)
+    end
+    return ds
+end
+
+function transform_data!(ds::DatasetType, p)
+    data = ds.data
+    col_names = propertynames(data)
+    if hasproperty(p.estimate,:transform_target)
+        cols_to_transform = propertynames(p.estimate.transform_target)
+        for col in cols_to_transform
+            if col ∈ col_names 
+                @views data[:,col] .= getproperty(p.estimate.transform_target, col)(data[:,col])
+                @views data[:,string(col)*"_sim"] .= getproperty(p.estimate.transform_target, col)(data[:,string(col)*"_sim"])
+            end
+        end
+    end
+    return ds
+end
+
 
 function get_logspace_model_and_covmat(mp, std_mp ; max_log_std=4) #TODO : change kwarg to max_log_var
     log_lb = log10.(max.(mp.array .- std_mp, 1e-15))
@@ -168,3 +195,4 @@ function get_transformed_covmat(dₒ_vec, std_vec, target_names, p) #TODO : chan
     return Cd
 end
 get_transformed_covmat(df_target, p) = get_transformed_covmat(df_target.target, df_target.std, df_target.target_name, p)
+
