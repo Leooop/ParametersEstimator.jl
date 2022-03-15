@@ -47,15 +47,14 @@ function optimize!(dataset, p, ;
     simulate!(dataset, p ; allow_mismatch)
     df_target = get_target_data(dataset)
     add_data_points!(df_target, dataset, p)
-    Cd = get_transformed_covmat(df_target, p) # needs to happen before data gets transformed.
-
+    Cd, pos_real_func = get_transformed_covmat(df_target, p) # needs to happen before data gets transformed.
     transform_data!(df_target,p)
     dₒ, dₙ = df_target.target, df_target.target_sim
     
-    Cdinv, Cminv = inv(Cd), inv(Cm)
+    Cminv = inv(Cm)
 
     function g(m)
-        p.mp .= exp10.(m)
+        p.mp .= exp.(m)
         simulate!(dataset, p ; allow_mismatch)
         df_target = get_target_data(dataset)
         add_data_points!(df_target, dataset, p)
@@ -66,7 +65,7 @@ function optimize!(dataset, p, ;
     #initialize plot
     ds_obs = Observable(dataset)#get_observable_dataset(dataset)
     #update_and_notify_obs!(ds_obs, dataset, p ; plot_transformed)
-    vizualize(ds_obs)
+    vizualize(ds_obs) 
     
     #iterate
     while (reldiff > reltol) & (n < maxiters)
@@ -74,10 +73,13 @@ function optimize!(dataset, p, ;
         #@show (mₙₑₓₜ.-mₚ)./mₚ
         mₙ .= mₙₑₓₜ
         get_new_parameters!(g, mₙₑₓₜ, mₙ, mₚ, dₙ, dₒ, Cm, Cd ; μₙ, diff_method)
-        p.mp .= exp10.(mₙₑₓₜ)
+        p.mp .= exp.(mₙₑₓₜ)
         simulate!(dataset, p ; allow_mismatch)
         df_target_next = get_target_data(dataset)
         add_data_points!(df_target_next, dataset, p)
+        Cd, _ = get_transformed_covmat(df_target_next, p ; is_positive_real_func=pos_real_func) # needs to happen before data gets transformed.
+        #@show Cd[[1,40],[1,40]]
+        Cdinv = inv(Cd)
         transform_data!(df_target_next,p)
         dₒ, dₙ = df_target_next.target, df_target_next.target_sim
         #Cd = get_transformed_covmat(df_target, p) # not needed if data always has the same length
@@ -85,8 +87,8 @@ function optimize!(dataset, p, ;
         cost_data  = (dₙ-dₒ)'*Cdinv*(dₙ-dₒ)
         cost_model = (mₙₑₓₜ-mₚ)'*Cminv*(mₙₑₓₜ-mₚ)
         cost = cost_data + cost_model
-        @show unique(Cdinv)
-        @show mean((dₙ-dₒ).^2)
+        #@show unique(Cdinv)
+        #@show mean((dₙ-dₒ).^2)
         @show cost_data
         @show cost_model
         @show cost
@@ -102,15 +104,10 @@ end
 
 function get_posterior_model_covariance(g::F, m::NamedArray, Cm, Cd) where F<:Function
     G = get_jacobian(g, m.array ; method=:finitediff)
-    # println("G done")
-    # Cm*G'
-    # println("Cm*G' done")
-    # G*Cm*G' + Cd
-    # println("G*Cm*G' + Cd done")
-    # inv(G*Cm*G' + Cd)
-    # println("inv(G*Cm*G' + Cd) done")
-    # G*Cm
-    # println("G*Cm done")
+    return Cm - Cm*G' * inv(G*Cm*G' + Cd) * G*Cm
+end
+function get_posterior_model_covariance(g::F, m::Vector, Cm, Cd) where F<:Function
+    G = get_jacobian(g, m ; method=:finitediff)
     return Cm - Cm*G' * inv(G*Cm*G' + Cd) * G*Cm
 end
 
@@ -156,30 +153,45 @@ function transform_data!(ds::DatasetType, p)
     return ds
 end
 
-
-function get_logspace_model_and_covmat(mp, std_mp ; max_log_std=4) #TODO : change kwarg to max_log_var
-    log_lb = log10.(max.(mp.array .- std_mp, 1e-15))
-    log_ub = log10.(mp.array .+ std_mp)
-    Δlog_var = min.((log_ub.-log_lb).^2, max_log_std)
-    Cm_log = Diagonal(Δlog_var)
-    return log10.(mp.array), Cm_log
+"log transform so that lognormal distribution σ tends toward std when m goes further away from 0, and μ is exactly equal to ln(m), i.e. the median of the lognormal"
+function to_log_from_physical_m_and_std(m,std)
+    σ² = log(1+std^2/m^2)
+    μ = log(m)
+    return μ, sqrt(σ²)
 end
-get_logspace_model_and_covmat(p) = get_logspace_model_and_covmat(p.mp, p.mp_std ; max_log_std = p.estimate.log_mp_std_max)
 
-function get_transformed_covmat(dₒ_vec, std_vec, target_names, p) #TODO : change kwarg to max_log_var
+function get_logspace_model_and_covmat(mp, std_mp) 
+    m_std_log = to_log_from_physical_m_and_std.(mp,std_mp)
+    m_log = [tup[1] for tup in m_std_log]
+    std_log = [tup[2] for tup in m_std_log]
+    Cm_log = Diagonal(std_log.^2)
+    return m_log, Cm_log
+end
+get_logspace_model_and_covmat(p) = get_logspace_model_and_covmat(p.mp, p.mp_std)
+
+function get_transformed_covmat(dₒ_vec, std_vec, target_names, p ; is_positive_real_func=nothing) 
     len = length(std_vec)
     Cd = Diagonal{Float64}(undef,len)
     funcs = [getproperty(p.estimate.transform_target, target_name) for target_name in target_names]
-    is_positive_real_func = fill(false,length(funcs))
-    println("entering try-catch block")
-    for i in eachindex(funcs)
-        try
-            funcs[i](-1)
-        catch e
-            is_positive_real_func[i] = ifelse(e isa DomainError, true, false)
+    if isnothing(is_positive_real_func)
+        is_positive_real_func = fill(false,length(funcs))
+        for i in eachindex(funcs)
+            try
+                funcs[i](-1)
+            catch e
+                is_positive_real_func[i] = ifelse(e isa DomainError, true, false)
+            end
+        end
+        for i in eachindex(funcs)
+            if is_positive_real_func[i]
+                if all(funcs[i].(dₒ_vec) .≈ log.(dₒ_vec))
+                    continue
+                else
+                    throw(error("transform function associated to $(target_names[i]) is a positive real function that is not log"))
+                end
+            end
         end
     end
-    println("exiting")
 
     for i in 1:len
         target_name = target_names[i]
@@ -187,12 +199,17 @@ function get_transformed_covmat(dₒ_vec, std_vec, target_names, p) #TODO : chan
         func = funcs[func_id]
         dₒ = dₒ_vec[i]
         std = std_vec[i]
-        lb = ifelse(is_positive_real_func[i], func(max(dₒ - std, 1e-15)), func(dₒ - std))
-        ub = func(dₒ + std)
-        var = ifelse(is_positive_real_func[i], min((ub-lb)^2, p.estimate.log_mp_std_max), (ub-lb)^2)
+        if is_positive_real_func[func_id]
+            dlog, stdlog = to_log_from_physical_m_and_std(dₒ,std)
+            var = stdlog^2
+        else
+            lb = func(dₒ - std)
+            ub = func(dₒ + std)
+            var =(ub-lb)^2
+        end
         Cd[i,i] = var
     end
-    return Cd
+    return Cd, is_positive_real_func
 end
-get_transformed_covmat(df_target, p) = get_transformed_covmat(df_target.target, df_target.std, df_target.target_name, p)
+get_transformed_covmat(df_target, p ; is_positive_real_func=nothing) = get_transformed_covmat(df_target.target, df_target.std, df_target.target_name, p ; is_positive_real_func)
 
