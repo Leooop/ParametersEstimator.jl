@@ -65,7 +65,7 @@ function optimize!(dataset, p, ;
     #initialize plot
     ds_obs = Observable(dataset)#get_observable_dataset(dataset)
     #update_and_notify_obs!(ds_obs, dataset, p ; plot_transformed)
-    vizualize(ds_obs) 
+    vizualize(ds_obs, p) 
     
     #iterate
     while (reldiff > reltol) & (n < maxiters)
