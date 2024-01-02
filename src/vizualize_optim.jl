@@ -1,6 +1,6 @@
 
 function vizualize(ds::Observable{Dataset}, p; linewidth=5, markersize=20)
-    f = Figure(resolution=(1500, 1200))
+    f = Figure(size=(800, 600))
     nts, npd = length(ds[].timeseries), length(ds[].ponctual)
     nfigrows = max(nts, npd)
     axs = Matrix{Axis}(undef, (nfigrows, 2))
