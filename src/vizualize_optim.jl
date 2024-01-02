@@ -1,5 +1,5 @@
 
-function vizualize(ds::Observable{Dataset}, p; linewidth=5, markersize=20)
+function vizualize(ds::Observable{Dataset}, p; linewidth=4, markersize=10)
     f = Figure(size=(800, 600))
     nts, npd = length(ds[].timeseries), length(ds[].ponctual)
     nfigrows = max(nts, npd)
@@ -31,7 +31,7 @@ function vizualize(ds::Observable{Dataset}, p; linewidth=5, markersize=20)
     return f
 end
 
-function vizualize(ds::Observable{<:DatasetType}, p; linewidth=5, markersize=20)
+function vizualize(ds::Observable{<:DatasetType}, p; linewidth=4, markersize=10)
     f = Figure(size=(1000, 800))
     name_sym = name(ds[])
     plot_props = getproperty(p.plot, Symbol(name_sym))
@@ -43,7 +43,7 @@ function vizualize(ds::Observable{<:DatasetType}, p; linewidth=5, markersize=20)
 end
 
 
-function draw_axis(ax, ds::Observable{TimeseriesDataset}, p; linewidth=5, markersize=20)
+function draw_axis(ax, ds::Observable{TimeseriesDataset}, p; linewidth=4, markersize=10)
     dg = @lift group($ds)
     name_sym = Symbol(name(ds[]))
     cols_to_plot = getproperty(p.plot, name_sym).syms
@@ -73,7 +73,7 @@ function draw_axis(ax, ds::Observable{TimeseriesDataset}, p; linewidth=5, marker
     return l, s
 end
 
-function draw_axis(ax, ds::Observable{PonctualDataset}, p; group_var=:pc, linewidth=5, markersize=20)
+function draw_axis(ax, ds::Observable{PonctualDataset}, p; group_var=:pc, linewidth=4, markersize=10)
     data = @lift $ds.data
     #colnames = names(data[][!,Not(ds[].target)])
     name_sym = Symbol(name(ds[]))
